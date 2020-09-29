@@ -1,15 +1,24 @@
 ---
-title: "twitter_sentiment"
+title: "twitter_sentiment example"
 author: "Patrick Lorch"
 date: "9/27/2020"
-output: html_document
+output: 
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: no
+    number_sections: true
+    theme: cerulean
+    highlight: haddock
+  pdf_document:
+    toc: true
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-## Text Workshop reference
+# Text Workshop CMP example
 
 This is derived from 
 
@@ -17,29 +26,76 @@ https://github.com/oharac/text_workshop
 
 and specifically the part called "4_sentiment_twitter_2018.*"
 
+For this to work, you have to (see above link for details):
+
+* get a twitter dev account and 
+* record keys in safe place
+* set up an app, with certain priveldges 
+  * read/write
+  * setlookup URL
+  
+## R basics
+
+This example uses "Tidy" R functions and workflow
+
+* More readable
+* Easier to re-run
+* Has SQL like functions
+* Uses tibbles instead of data.frames
+  * These are a pain to view
+  * More strict variable typing
+
+## Basic Twitter API query
+
+Key points:
+
+* defaults to `type = "recent"`
+  * returns data from only last 6-9 days
+* includes retweets
+  * assumes retweeters share original sentiment
+* `retryonratelimit = FALSE` by default
+  * cuts off query at ratelimit
+    * after 8-10% of full request in my case
+  * set TRUE when done testing
+* remove some of the columns and un-nest hashtags
+
 ```{r twitter}
-library(tidyverse)
-library(stringr)
+library(tidyverse) # functions for working with tidy data
+library(stringr) # tidy string manipulation functions
 
 # install.packages('rtweet')
-library(rtweet)
+library(rtweet) # functions to interact with twitter API
 
-twitter_key <- scan('~/github/api_keys/twitter.txt', what = 'character')
-
-consumer_key    <- twitter_key[1]
-consumer_secret <- twitter_key[2]
+# twitter keys, not uploaded with github project
+# Comment if not knitting
+# twitter_key <- scan('~/github/api_keys/twitter.txt', what = 'character')
+# consumer_key    <- twitter_key[1]
+# consumer_secret <- twitter_key[2]
 
 # Create token and allow access by this app
-rtweet::create_token(app = "Park Sentiment Analysis", consumer_key, consumer_secret,
-  set_renv = TRUE)
+# Comment if knitting
+# rtweet::create_token(app = "Park Sentiment Analysis", 
+#                      consumer_key, consumer_secret,
+#                      set_renv = TRUE)
 
 # If a file that is adequate is not already in memory
-if(!file.exists(cmp_tweets_file)) { 
-  ### A bit slow so save it for future use...
+#  This saves you using up your free twitter queries
+if(!file.exists("data/cmp_tweets_file.txt")) { 
+  ### A bit slow, so save it for future use...
   
-  tw_cm_raw <- rtweet::search_tweets('@clevemetroparks OR (cleveland AND metroparks)', n = 10000, 
-                                include_rts = TRUE)
+  # Let's look at the key function
+  # ?rtweet::search_tweets
   
+  tw_cm_raw <- rtweet::search_tweets('@clevemetroparks OR 
+                                     (cleve AND metropark)', 
+# Uncomment this when you are done debugging
+#                                     retryonratelimit = T,
+                                     n = 10000,
+                                     include_rts = TRUE)
+  # View(tw_cm_raw)
+  # Comment if knitting
+  # unique(tw_cm_raw$screen_name[order(tw_cm_raw$screen_name)])
+
   tw_cm <- tw_cm_raw %>%
     select(status_id, created_at, screen_name,
            text, source, 
@@ -49,36 +105,47 @@ if(!file.exists(cmp_tweets_file)) {
            contains('country')) %>%
     unnest(hashtags)
 
-  write_csv(tw_cm, "data/cmp_tweets_file")
+  # View(tw_cm)
+
+  write_csv(tw_cm, "data/cmp_tweets_file.txt")
   
 } else {
   
-  tw_cm <- read_csv("data/cmp_tweets_file")
+  tw_cm <- read_csv("data/cmp_tweets_file.txt")
   
 }
 
 # remove keys so R does not save them in .rhistory
-rm(consumer_key, consumer_secret, twitter_key)
+# Comment if knitting
+# rm(consumer_key, consumer_secret, twitter_key)
 
 ```
 
-## Clean up
+## Clean up input data
 
-Remove user information and tweets by CMP (staff tweets and retweets still included).
+* Remove 
+  * User information
+  * Tweets by CMP
+  * Staff tweets and retweets still included
+  * URLs
+* Make a device variable for later comparisons
+* Lower case of hashtags
 
 ```{r clean}
 ### Set up some devices and hashtags we want to test:
 devices <- c('iphone', 'ipad', 'android') %>% 
   paste(collapse = '|')
-cm_hash <- c('cleve', 'metropark', 'trail')
+# cm_hash <- c('cleve', 'metropark', 'trail')
+cm_handles = c('clevemetroparks', 
+               'clemetzoo', 
+               'clevezoosociety')
 
-### Note use of POSIX instead of more complicated [^A-Za-z0-9<etc>].
 tw_phone <- tw_cm %>%
   select(created_at, screen_name, text, source, 
          # place_full_name, country,
          hashtags) %>%
   filter(#tolower(hashtags) %in% cm_hash, 
-         tolower(screen_name) != 'clevemetroparks') %>%
+         !tolower(screen_name) %in% cm_handles) %>%
   mutate(text = str_replace_all(text, '[^[:ascii:]]', '_') %>% 
            tolower(),
          text_clean = str_replace_all(text, '@[^ ]+', '_usr_'),
@@ -97,7 +164,18 @@ tw_phone <- tw_phone %>%
 
 What are people saying?
 
+Contrived example:
 Q1: Are iPhone users more positive than android users?
+
+This section uses `tidytext::get_sentiments` to bring in sentiment value assignment dictionaries.
+
+We need to modify these because, for example, chagrin is not a negative word for us, it is neutral and a place, so not a sentiment word.
+
+Key points:
+
+* Un-nest words from cleaned text field
+* Remove "stop words" (e.g., the, a, him, etc.)
+* Assign sentiment to words found in sentiment dictionary
 
 ```{r sentiment}
 library(tidytext)
@@ -133,29 +211,38 @@ sentiments_b_parks[sentiments_b_parks$word == "untouched",]
 sentiments_b_parks[sentiments_b_parks$word == "jealous",]
 
 # Remove some other words that are not negative in parks
-#  For this to work you have to first set to_remove (see below)
-sentiments_b_parks = sentiments_b_parks[!sentiments_b_parks$word %in% to_remove,]
-
-test_df <- tw_phone %>%
-  tidytext::unnest_tokens(output = word, input = text_clean, token = 'words') %>%
-  anti_join(tidytext::stop_words, by = 'word') %>%
-  left_join(sentiments_b_parks, by = 'word')
-### Check the sentiment assignments by word - some are pretty funny,
-### but also shows limitation of the word bank used
-
-words_n = unique(test_df$word[test_df$sentiment == "negative"])
-words_p = unique(test_df$word[test_df$sentiment == "positive"])
+#  For this to work you have to first set to_remove after 
+#  running this once and looking at the words_n
 to_remove = c("chagrin", "concession", "fall",
                    "falls", "hollow", "overlook", "retreat", 
                    "rocky", "scramble")
-# switch_p_to_n = c()
-# switch_p_to_na = c()
+sentiments_b_parks = sentiments_b_parks[!sentiments_b_parks$word %in% to_remove,]
 
-score_df <- test_df %>%
+test_df <- tw_phone %>%
+  tidytext::unnest_tokens(output = word, 
+                          input = text_clean, 
+                          token = 'words') %>%
+  anti_join(tidytext::stop_words, by = 'word') %>%
+  left_join(sentiments_b_parks, by = 'word')
+
+### Check the sentiment assignments by word - 
+### some are pretty funny, but also shows 
+### limitation of the word bank used
+
+(words_n = unique(test_df$word[test_df$sentiment == "negative"]))
+(words_p = unique(test_df$word[test_df$sentiment == "positive"]))
+
+score_df_raw <- test_df %>%
   count(device, hashtags, sentiment) %>%
   pivot_wider(names_from = sentiment, values_from = n) %>%
-  mutate(score = (positive - negative) - mean(positive - negative, na.rm = TRUE))
+  mutate(score = (positive - negative) - 
+           mean(positive - negative, na.rm = TRUE))
 
+# remove hashtags with no score (either no pos or no neg)
+score_df = score_df_raw %>% 
+  filter(!is.na(score))
+mean(score_df$positive - score_df$negative)
+  
 ggplot(score_df, aes(x = device, fill = hashtags)) +
   theme_classic() +
   geom_bar(aes(y = score), stat = 'identity', position = 'dodge') +
