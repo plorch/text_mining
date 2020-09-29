@@ -40,3 +40,8 @@ vignettes/*.pdf
 
 # data files
 /data
+
+# output files
+*.log
+*.pdf
+*.html
