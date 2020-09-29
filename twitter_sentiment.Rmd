@@ -1,0 +1,166 @@
+---
+title: "twitter_sentiment"
+author: "Patrick Lorch"
+date: "9/27/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Text Workshop reference
+
+This is derived from 
+
+https://github.com/oharac/text_workshop
+
+and specifically the part called "4_sentiment_twitter_2018.*"
+
+```{r twitter}
+library(tidyverse)
+library(stringr)
+
+# install.packages('rtweet')
+library(rtweet)
+
+twitter_key <- scan('~/github/api_keys/twitter.txt', what = 'character')
+
+consumer_key    <- twitter_key[1]
+consumer_secret <- twitter_key[2]
+
+# Create token and allow access by this app
+rtweet::create_token(app = "Park Sentiment Analysis", consumer_key, consumer_secret,
+  set_renv = TRUE)
+
+# If a file that is adequate is not already in memory
+if(!file.exists(cmp_tweets_file)) { 
+  ### A bit slow so save it for future use...
+  
+  tw_cm_raw <- rtweet::search_tweets('@clevemetroparks OR (cleveland AND metroparks)', n = 10000, 
+                                include_rts = TRUE)
+  
+  tw_cm <- tw_cm_raw %>%
+    select(status_id, created_at, screen_name,
+           text, source, 
+           is_quote, is_retweet,
+           hashtags, favorite_count, retweet_count,
+           contains('place'),
+           contains('country')) %>%
+    unnest(hashtags)
+
+  write_csv(tw_cm, "data/cmp_tweets_file")
+  
+} else {
+  
+  tw_cm <- read_csv("data/cmp_tweets_file")
+  
+}
+
+# remove keys so R does not save them in .rhistory
+rm(consumer_key, consumer_secret, twitter_key)
+
+```
+
+## Clean up
+
+Remove user information and tweets by CMP (staff tweets and retweets still included).
+
+```{r clean}
+### Set up some devices and hashtags we want to test:
+devices <- c('iphone', 'ipad', 'android') %>% 
+  paste(collapse = '|')
+cm_hash <- c('cleve', 'metropark', 'trail')
+
+### Note use of POSIX instead of more complicated [^A-Za-z0-9<etc>].
+tw_phone <- tw_cm %>%
+  select(created_at, screen_name, text, source, 
+         # place_full_name, country,
+         hashtags) %>%
+  filter(#tolower(hashtags) %in% cm_hash, 
+         tolower(screen_name) != 'clevemetroparks') %>%
+  mutate(text = str_replace_all(text, '[^[:ascii:]]', '_') %>% 
+           tolower(),
+         text_clean = str_replace_all(text, '@[^ ]+', '_usr_'),
+         text_clean = str_replace_all(text_clean, 'http[^ ]+', '_url_')) %>%
+  mutate(device = str_match(tolower(source), devices))
+  
+### A couple more cleanups
+tw_phone <- tw_phone %>%
+  mutate(hashtags = tolower(hashtags),
+         device = ifelse(is.na(device), 'other', device))
+ 
+```
+
+
+## Sentiment analysis
+
+What are people saying?
+
+Q1: Are iPhone users more positive than android users?
+
+```{r sentiment}
+library(tidytext)
+
+sentiments_b <- tidytext::get_sentiments('bing')
+sentiments_a <- tidytext::get_sentiments('afinn')
+sentiments_n <- tidytext::get_sentiments('nrc')
+# sentiments_l <- tidytext::get_sentiments('loughran')
+
+# Fix sentiments for words that mean something different for
+# parks.  This is done just by looking through words from recent
+# tweets in test_df, not going through sentiments_b line by
+# line.
+
+# Requires you to generate test_df, look at words, then
+# regenerate test_df
+
+sentiments_b_parks = sentiments_b %>%
+  mutate(sentiment = case_when(word == "untouched" ~ "positive",
+                          word == "jealous" ~ "positive",
+                          TRUE ~sentiment))
+
+# This works too
+# sentiments_b_parks = sentiments_b %>%
+#   mutate(sentiment = if_else(word == "untouched" | 
+#                                word == "jealous", 
+#                              "positive",sentiment))
+
+# Testing
+sentiments_b[sentiments_b$word == "untouched",]
+sentiments_b[sentiments_b$word == "jealous",]
+sentiments_b_parks[sentiments_b_parks$word == "untouched",]
+sentiments_b_parks[sentiments_b_parks$word == "jealous",]
+
+# Remove some other words that are not negative in parks
+#  For this to work you have to first set to_remove (see below)
+sentiments_b_parks = sentiments_b_parks[!sentiments_b_parks$word %in% to_remove,]
+
+test_df <- tw_phone %>%
+  tidytext::unnest_tokens(output = word, input = text_clean, token = 'words') %>%
+  anti_join(tidytext::stop_words, by = 'word') %>%
+  left_join(sentiments_b_parks, by = 'word')
+### Check the sentiment assignments by word - some are pretty funny,
+### but also shows limitation of the word bank used
+
+words_n = unique(test_df$word[test_df$sentiment == "negative"])
+words_p = unique(test_df$word[test_df$sentiment == "positive"])
+to_remove = c("chagrin", "concession", "fall",
+                   "falls", "hollow", "overlook", "retreat", 
+                   "rocky", "scramble")
+# switch_p_to_n = c()
+# switch_p_to_na = c()
+
+score_df <- test_df %>%
+  count(device, hashtags, sentiment) %>%
+  pivot_wider(names_from = sentiment, values_from = n) %>%
+  mutate(score = (positive - negative) - mean(positive - negative, na.rm = TRUE))
+
+ggplot(score_df, aes(x = device, fill = hashtags)) +
+  theme_classic() +
+  geom_bar(aes(y = score), stat = 'identity', position = 'dodge') +
+  labs(y = 'sentiment score') +
+  coord_flip()
+
+```
+
